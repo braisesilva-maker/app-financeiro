@@ -139,6 +139,42 @@ function dataHojeBR(){var m=["janeiro","fevereiro","março","abril","maio","junh
 /* ====== banco de clientes ====== */
 function dbPath(){ return folderOf()+"clientes.json"; }
 function delsPath(){ return folderOf()+"clientes_dels.json"; }
+/* ===== criptografia do banco (senha do app) ===== */
+function _sha256(ascii){
+  function rr(n,x){ return (x>>>n)|(x<<(32-n)); }
+  var maxWord=Math.pow(2,32), result="", words=[], asciiBitLength=ascii.length*8;
+  var hash=_sha256.h=_sha256.h||[], k=_sha256.k=_sha256.k||[], primeCounter=k.length, isComposite={};
+  for(var candidate=2; primeCounter<64; candidate++){ if(!isComposite[candidate]){ for(var i=0;i<313;i+=candidate){ isComposite[i]=candidate; } hash[primeCounter]=(Math.pow(candidate,0.5)*maxWord)|0; k[primeCounter++]=(Math.pow(candidate,1/3)*maxWord)|0; } }
+  ascii+="\x80"; while(ascii.length%64-56) ascii+="\x00";
+  for(var i=0;i<ascii.length;i++){ var j=ascii.charCodeAt(i); if(j>>8) return ""; words[i>>2]|=j<<((3-i)%4)*8; }
+  words[words.length]=((asciiBitLength/maxWord)|0); words[words.length]=(asciiBitLength);
+  for(var j=0;j<words.length;){
+    var w=words.slice(j,j+=16), oldHash=hash; hash=hash.slice(0,8);
+    for(var i=0;i<64;i++){
+      var w15=w[i-15], w2=w[i-2], a=hash[0], e=hash[4];
+      var temp1=hash[7]+(rr(6,e)^rr(11,e)^rr(25,e))+((e&hash[5])^((~e)&hash[6]))+k[i]+(w[i]=(i<16)?w[i]:(w[i-16]+(rr(7,w15)^rr(18,w15)^(w15>>>3))+w[i-7]+(rr(17,w2)^rr(19,w2)^(w2>>>10)))|0);
+      var temp2=(rr(2,a)^rr(13,a)^rr(22,a))+((a&hash[1])^(a&hash[2])^(hash[1]&hash[2]));
+      hash=[(temp1+temp2)|0].concat(hash); hash[4]=(hash[4]+temp1)|0;
+    }
+    for(var i=0;i<8;i++){ hash[i]=(hash[i]+oldHash[i])|0; }
+  }
+  for(var i=0;i<8;i++){ for(var j=3;j+1;j--){ var b=(hash[i]>>(j*8))&255; result+=((b<16)?"0":"")+b.toString(16); } }
+  return result;
+}
+function _utf8(s){ return unescape(encodeURIComponent(s)); }
+function _fromUtf8(b){ return decodeURIComponent(escape(b)); }
+function hexToBytes(h){ var s=""; for(var i=0;i<h.length;i+=2) s+=String.fromCharCode(parseInt(h.substr(i,2),16)); return s; }
+function bytesToHex(s){ var h=""; for(var i=0;i<s.length;i++){ var b=s.charCodeAt(i)&255; h+=(b<16?"0":"")+b.toString(16); } return h; }
+function randHex(n){ var s=""; while(s.length<n){ s+=Math.floor(Math.random()*65536).toString(16); } return s.substr(0,n); }
+function rc4str(keyStr,dataStr){ var S=[],i,j=0,x,n=dataStr.length,klen=keyStr.length; for(i=0;i<256;i++)S[i]=i; for(i=0;i<256;i++){ j=(j+S[i]+keyStr.charCodeAt(i%klen))&255; x=S[i];S[i]=S[j];S[j]=x; } i=0;j=0; for(var d=0;d<1024;d++){ i=(i+1)&255;j=(j+S[i])&255;x=S[i];S[i]=S[j];S[j]=x; } var out=new Array(n); for(var c=0;c<n;c++){ i=(i+1)&255;j=(j+S[i])&255;x=S[i];S[i]=S[j];S[j]=x; out[c]=String.fromCharCode(dataStr.charCodeAt(c)^S[(S[i]+S[j])&255]); } return out.join(""); }
+var _KDF_ITER=2500;
+function kdf(pw,salt){ var h=_sha256(_utf8(salt+"|"+pw)); for(var i=0;i<_KDF_ITER;i++){ h=_sha256(h+salt); } return h; }
+function decryptEnv(env,mk){ var rc4key=hexToBytes(_sha256(mk+":"+env.nonce)); var pt=rc4str(rc4key,hexToBytes(env.ct)); return JSON.parse(_fromUtf8(pt)); }
+/* chave dos apps: protege o arquivo contra leitura FORA dos apps (bloco de notas,
+   visualizador da nuvem, backups); dentro dos apps a busca funciona sem senha */
+var GDK="brsv2026-3f8a1c5e7b924d06a8e1f4c2b7d95360";
+function mkGD(salt){ return _sha256(_utf8(GDK+"|"+salt)); }
+
 /* ===== sincronização (celular + PC no mesmo arquivo) ===== */
 var CLIDELS=[], CLISNAP={}, CLIUP={};
 function now2(){ return new Date().getTime(); }
@@ -264,21 +300,27 @@ function uploadUtf8(nome,folderid,txt,cb){
   x.onerror=function(){ cb(false); };
   x.send(fd);
 }
+function parseBanco(s){
+  CLIENTES=[]; CLIDELS=[];
+  try{
+    var o=JSON.parse(s);
+    if(o&&o.v==="enc1"){ var d=decryptEnv(o,mkGD(o.salt)); if(d&&d.itens){ CLIENTES=d.itens; CLIDELS=d.del||[]; } else if(d&&d.length!=null){ CLIENTES=d; } }
+    else if(o&&o.length!=null){ CLIENTES=o; }
+  }catch(e){}
+}
 function baixarBanco(cb){
   statPath(PASTA+"/clientes.json",function(md){
     FID.c=md.fileid; FID.fc=md.parentfolderid;
     baixarFid(FID.c,function(s){
-      try{ CLIENTES=JSON.parse(s); localStorage.setItem(LSK+"_cli",s); }catch(e){ CLIENTES=[]; }
-      statPath(PASTA+"/clientes_dels.json",function(md2){
-        FID.d=md2.fileid;
-        baixarFid(FID.d,function(s2){ try{ CLIDELS=JSON.parse(s2); }catch(e2){ CLIDELS=[]; } snapCli(); cb(); },function(){ CLIDELS=[]; snapCli(); cb(); });
-      },function(){ CLIDELS=[]; FID.d=0; snapCli(); cb(); });
+      parseBanco(s);
+      try{ localStorage.setItem(LSK+"_cli",s); }catch(e){}
+      snapCli(); cb();
     },function(err){ usaCache(err,cb); });
   },function(err){ usaCache(err,cb); });
 }
 function usaCache(err,cb){
   var s=null; try{ s=localStorage.getItem(LSK+"_cli"); }catch(e){}
-  if(s){ try{ CLIENTES=JSON.parse(s); }catch(e1){ CLIENTES=[]; } CLIDELS=[]; OFFLINE=true; snapCli(); cb(); toastSync("Sem conexão — usando última cópia (só consulta)"); return; }
+  if(s){ parseBanco(s); OFFLINE=true; snapCli(); cb(); toastSync("Sem conexão — usando última cópia (só consulta)"); return; }
   showLoginPC("Não consegui acessar o pCloud: "+err);
 }
 function toastSync(m){ try{ var d=document.createElement("div"); d.style.cssText="position:fixed;left:10%;right:10%;bottom:18px;background:#000;color:#e6c15a;border:1px solid #8a6d1f;border-radius:8px;padding:10px;text-align:center;z-index:99999;font-size:13px"; d.innerHTML=m; document.body.appendChild(d); setTimeout(function(){ try{ d.parentNode.removeChild(d); }catch(e){} },2600); }catch(e){} }
@@ -288,18 +330,24 @@ function saveClientes(){
   if(SAVING){ PENDSV=true; return true; }
   SAVING=true; toastSync("Salvando na nuvem…");
   function sobe(){
-    uploadUtf8("clientes.json",FID.fc,JSON.stringify(CLIENTES),function(ok){
-      uploadUtf8("clientes_dels.json",FID.fc,JSON.stringify(CLIDELS),function(ok2){
-        SAVING=false;
-        if(ok){ try{ localStorage.setItem(LSK+"_cli",JSON.stringify(CLIENTES)); }catch(e){} snapCli(); toastSync("Salvo na nuvem ✓"); }
-        else toastSync("⚠ Não salvou (sem conexão?) — tente de novo");
-        if(PENDSV){ PENDSV=false; saveClientes(); }
-      });
+    var salt=randHex(32), nonce=randHex(32), mk2=mkGD(salt);
+    var ct=bytesToHex(rc4str(hexToBytes(_sha256(mk2+":"+nonce)),_utf8(JSON.stringify({v:2,itens:CLIENTES,del:CLIDELS}))));
+    var env=JSON.stringify({v:"enc1",salt:salt,check:_sha256(mk2+"chk"),nonce:nonce,ct:ct});
+    uploadUtf8("clientes.json",FID.fc,env,function(ok){
+      SAVING=false;
+      if(ok){ try{ localStorage.setItem(LSK+"_cli",env); }catch(e){} snapCli(); toastSync("Salvo na nuvem ✓ (criptografado)"); }
+      else toastSync("⚠ Não salvou (sem conexão?) — tente de novo");
+      if(PENDSV){ PENDSV=false; saveClientes(); }
     });
   }
   if(FID.c){
     baixarFid(FID.c,function(s){
-      try{ var rem=JSON.parse(s); var res=mergeColl(CLIENTES,rem,CLIDELS,[],CLIUP,"cliente"); CLIENTES=res.itens; CLIDELS=res.del; }catch(e){}
+      try{
+        var o=JSON.parse(s), rem=[], remD=[];
+        if(o&&o.v==="enc1"){ var d=decryptEnv(o,mkGD(o.salt)); if(d&&d.itens){ rem=d.itens; remD=d.del||[]; } else if(d&&d.length!=null){ rem=d; } }
+        else if(o&&o.length!=null){ rem=o; }
+        var res=mergeColl(CLIENTES,rem,CLIDELS,remD,CLIUP,"cliente"); CLIENTES=res.itens; CLIDELS=res.del;
+      }catch(e){}
       sobe();
     },function(){ sobe(); });
   } else sobe();

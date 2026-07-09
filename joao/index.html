@@ -868,10 +868,14 @@ function extReais(v){ v=Math.round((v||0)*100)/100; var r=Math.floor(v),c=Math.r
 function moneyNum(n){ return money(n).replace("R$ ",""); }
 function callGerar(modelo,saida,vals,formato){ return {ok:false,msg:"A geração de documentos só está disponível no computador."}; }
 var CLIENTES_GD=null, SELCLI=null;
+/* chave dos apps p/ o banco de clientes do Gerador (protege o arquivo fora dos apps) */
+var GDK="brsv2026-3f8a1c5e7b924d06a8e1f4c2b7d95360";
+function mkGD(salt){ return _sha256(_utf8(GDK+"|"+salt)); }
+function decCliGD(o){ try{ var d=decryptEnv(o,mkGD(o.salt)); if(d&&d.itens) return d.itens; if(d&&d.length!=null) return d; }catch(e){} return []; }
 function loadCliGD(){ return CLIENTES_GD||[]; }
 function prefetchCli(){
   statPath("/Documentos jurídicos/Gerador de Documentos/clientes.json",function(md){
-    baixarFid(md.fileid,"utf8",function(s){ try{ CLIENTES_GD=JSON.parse(s); }catch(e){} },function(){});
+    baixarFid(md.fileid,"utf8",function(s){ try{ var o=JSON.parse(s); if(o&&o.v==="enc1"){ CLIENTES_GD=decCliGD(o); } else if(o&&o.length!=null){ CLIENTES_GD=o; } }catch(e){} },function(){});
   },function(){});
 }function buscarCliGD(){
   var q=gv2("n_buscacli").toLowerCase(); var res=document.getElementById("n_clires"); if(!res) return;
